@@ -1,0 +1,17 @@
+aiohttp==3.9.5
+playwright==1.44.0
+beautifulsoup4==4.12.3
+lxml==5.2.2
+google-generativeai==0.7.2
+groq==0.9.0
+openai==1.35.0        # DeepSeek uses an OpenAI-compatible API
+pandas==2.2.2
+pydantic==2.7.4
+python-dotenv==1.0.1
+gspread==6.1.2
+google-auth==2.30.0
+google-auth-oauthlib==1.2.0
+rapidfuzz==3.9.4
+tenacity==8.4.2
+python-dateutil==2.9.0.post0
+tqdm==4.66.4
