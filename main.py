@@ -7,110 +7,87 @@ Usage:
                                        (useful for local testing without a service account)
 
 Pipeline stages:
-    1. Scrape startups, products, papers (+ GitHub stars), news, jobs
-    2. Resolve entity names to canonical form (startups <-> products <-> jobs)
-    3. Export everything to a 6-tab Google Sheet with a public view link
+    1. Crawl papers (arXiv + GitHub star enrichment), news, and jobs concurrently
+    2. Resolve job/company names to canonical form
+    3. Write CSV backups to data/ (always) and export a 6-tab Google Sheet (unless skipped)
+
+NOTE: Startups and Products entities/schemas exist (src/models/schemas.py) but
+no crawler currently populates them -- only papers_scraper.py and
+signal_scraper.py (news + jobs) were built. Those two tabs stay empty until a
+startups/products crawler is added.
 """
 import argparse
 import asyncio
-import logging
+from pathlib import Path
+from typing import List
 
 import pandas as pd
+from loguru import logger
 
-from src.scrapers.startups import scrape_startups
-from src.scrapers.products import scrape_products
-from src.scrapers.arxiv_papers import scrape_papers
-from src.scrapers.news import scrape_news
-from src.scrapers.jobs import scrape_jobs
-from src.entity_resolution.resolver import EntityResolver, MappingLogEntry
+from src.crawlers.papers_scraper import scrape_papers
+from src.crawlers.signal_scraper import scrape_jobs, scrape_news
+from src.exporters.gsheet_exporter import export_to_sheets
+from src.models.schemas import ProductEntity, StartupEntity
+from src.resolvers.entity_resolver import EntityResolver
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
-logger = logging.getLogger("main")
+DATA_DIR = Path(__file__).parent / "data"
 
 
-async def run_scrapers():
-    logger.info("=== Stage 1: Scraping ===")
-    scraper_names = ("startups", "products", "papers", "news", "jobs")
+def _unwrap(result, label: str) -> list:
+    if isinstance(result, BaseException):
+        logger.error(f"{label} failed, continuing with 0 rows -- {type(result).__name__}: {result}")
+        return []
+    return result
+
+
+def _backup_csv(items: List, filename: str) -> None:
+    rows = [item.model_dump(mode="json") for item in items]
+    pd.json_normalize(rows).to_csv(DATA_DIR / filename, index=False)
+    logger.info(f"Wrote {len(rows)} rows to data/{filename}")
+
+
+async def run_crawlers():
+    logger.info("=== Stage 1: Crawling ===")
     # return_exceptions=True is load-bearing: without it, a single failing
-    # scraper propagates out of gather() and aborts the whole run before any
-    # CSV is written -- discarding the four scrapers that did succeed.
-    results = await asyncio.gather(
-        scrape_startups(),
-        scrape_products(),
+    # crawler propagates out of gather() and aborts the whole run before any
+    # CSV is written.
+    papers, news, jobs = await asyncio.gather(
         scrape_papers(),
         scrape_news(),
         scrape_jobs(),
         return_exceptions=True,
     )
-
-    scraped = []
-    for name, result in zip(scraper_names, results):
-        if isinstance(result, BaseException):
-            logger.error(
-                f"{name} scraper failed, continuing with 0 rows -- "
-                f"{type(result).__name__}: {str(result).splitlines()[0]}"
-            )
-            scraped.append([])
-        else:
-            scraped.append(result)
-
-    startups, products, papers, news, jobs = scraped
-    logger.info(
-        f"Scraped: {len(startups)} startups, {len(products)} products, "
-        f"{len(papers)} papers, {len(news)} news, {len(jobs)} jobs"
-    )
-    return startups, products, papers, news, jobs
+    papers = _unwrap(papers, "papers_scraper")
+    news = _unwrap(news, "signal_scraper (news)")
+    jobs = _unwrap(jobs, "signal_scraper (jobs)")
+    logger.info(f"Crawled: {len(papers)} papers, {len(news)} news, {len(jobs)} jobs")
+    return papers, news, jobs
 
 
-def run_entity_resolution(startups, products, jobs):
+def run_entity_resolution(jobs) -> EntityResolver:
     logger.info("=== Stage 2: Entity Resolution ===")
-    resolver = EntityResolver(entity_type="startup")
-
-    startup_names = [s["name"] for s in startups]
-    name_map = resolver.resolve_batch(startup_names)
-    for s in startups:
-        s["canonical_name"] = name_map.get(s["name"], s["name"])
-
-    # Products and jobs reference startup/company names -- resolve against
-    # the SAME registry so "OpenAI" everywhere collapses to one canonical form
-    for p in products:
-        if p.get("startup_name"):
-            p["startup_canonical_name"] = resolver.resolve(p["startup_name"])
-    for j in jobs:
-        j["company_canonical_name"] = resolver.resolve(j["company"])
-
-    log_entries = [
-        {
-            "raw_name": e.raw_name,
-            "canonical_name": e.canonical_name,
-            "entity_type": e.entity_type,
-            "match_method": e.match_method,
-            "confidence": e.confidence,
-        }
-        for e in resolver.log
-    ]
-    logger.info(f"Entity resolution produced {len(log_entries)} mapping log entries")
-    return log_entries
+    resolver = EntityResolver()
+    for job in jobs:
+        job.content.company = resolver.resolve(job.content.company)
+    logger.info(f"Entity resolution produced {len(resolver.log)} mapping log entries")
+    return resolver
 
 
-async def main(skip_sheets: bool):
-    startups, products, papers, news, jobs = await run_scrapers()
-    entity_log = run_entity_resolution(startups, products, jobs)
+async def run_pipeline(skip_sheets: bool = False):
+    logger.info("Starting AI landscape ingestion pipeline")
 
-    startups_df = pd.DataFrame(startups)
-    products_df = pd.DataFrame(products)
-    papers_df = pd.DataFrame(papers)
-    news_df = pd.DataFrame(news)
-    jobs_df = pd.DataFrame(jobs)
-    entity_log_df = pd.DataFrame(entity_log)
+    startups: List[StartupEntity] = []
+    products: List[ProductEntity] = []
+    papers, news, jobs = await run_crawlers()
+    resolver = run_entity_resolution(jobs)
 
-    # Always save local CSV backups -- cheap insurance if the Sheets export fails
-    startups_df.to_csv("data/startups.csv", index=False)
-    products_df.to_csv("data/products.csv", index=False)
-    papers_df.to_csv("data/research_papers.csv", index=False)
-    news_df.to_csv("data/news.csv", index=False)
-    jobs_df.to_csv("data/jobs.csv", index=False)
-    entity_log_df.to_csv("data/entity_mapping_log.csv", index=False)
+    DATA_DIR.mkdir(exist_ok=True)
+    _backup_csv(startups, "startups.csv")
+    _backup_csv(products, "products.csv")
+    _backup_csv(papers, "research_papers.csv")
+    _backup_csv(news, "news.csv")
+    _backup_csv(jobs, "jobs.csv")
+    pd.DataFrame(resolver.log_as_rows()).to_csv(DATA_DIR / "entity_mapping_log.csv", index=False)
     logger.info("Saved local CSV backups to ./data/")
 
     if skip_sheets:
@@ -118,13 +95,19 @@ async def main(skip_sheets: bool):
         return
 
     logger.info("=== Stage 3: Google Sheets Export ===")
-    from src.sheets.export import export_all
-    url = export_all(startups_df, products_df, papers_df, jobs_df, news_df, entity_log_df)
-    logger.info(f"DONE. Public sheet: {url}")
+    try:
+        url = export_to_sheets(startups, products, papers, jobs, news, resolver.log_as_rows())
+        logger.info(f"DONE. Public sheet: {url}")
+    except Exception as e:
+        logger.error(f"Google Sheets export failed, but CSV backups are safe in data/: {e}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="AI Landscape Tracker pipeline")
+    parser.add_argument("--skip-sheets", action="store_true", help="Scrape + resolve only, skip Google Sheets export")
+    args = parser.parse_args()
+    asyncio.run(run_pipeline(skip_sheets=args.skip_sheets))
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--skip-sheets", action="store_true")
-    args = parser.parse_args()
-    asyncio.run(main(skip_sheets=args.skip_sheets))
+    main()

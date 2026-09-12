@@ -26,6 +26,9 @@ class Config:
     REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))
     FRESHNESS_WINDOW_HOURS = int(os.getenv("FRESHNESS_WINDOW_HOURS", "24"))
 
+    # Optional upstream proxy for Playwright contexts, e.g. "http://user:pass@host:port"
+    PROXY_SERVER = os.getenv("PROXY_SERVER", "") or None
+
     # Minimum row targets (Phase I/II requirement)
     MIN_STARTUPS = 1000
     MIN_PRODUCTS = 1000

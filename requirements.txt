@@ -1,17 +1,23 @@
+# --- Requested in the project spec ---
+# NOTE: "asyncio" is stdlib since Python 3.4+; the PyPI backport package of the
+# same name targets Python 2 and can break installs on modern Python, so it is
+# intentionally left out here -- `import asyncio` needs nothing from pip.
 aiohttp==3.9.5
 playwright==1.44.0
-beautifulsoup4==4.12.3
-lxml==5.2.2
-google-generativeai==0.7.2
-groq==0.9.0
-openai==1.35.0        # DeepSeek uses an OpenAI-compatible API
-pandas==2.2.2
 pydantic==2.7.4
-python-dotenv==1.0.1
+google-genai==0.3.0
+groq==0.9.0
+beautifulsoup4==4.12.3
+pandas==2.2.2
 gspread==6.1.2
+loguru==0.7.2
+
+# --- Required for the above to actually run ---
+openai==1.35.0                 # DeepSeek uses an OpenAI-compatible API
+python-dotenv==1.0.1
 google-auth==2.30.0
-google-auth-oauthlib==1.2.0
 rapidfuzz==3.9.4
-tenacity==8.4.2
 python-dateutil==2.9.0.post0
-tqdm==4.66.4
+tenacity==8.4.2
+playwright-stealth==1.0.6
+lxml==5.2.2
