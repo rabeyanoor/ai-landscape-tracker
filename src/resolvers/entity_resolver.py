@@ -28,6 +28,13 @@ def _normalize(name: str) -> str:
     return _WHITESPACE_RE.sub(" ", cleaned).strip()
 
 
+def _tight(name: str) -> str:
+    """Whitespace-insensitive normalization on top of _normalize, so 'Open AI'
+    and 'OpenAI' collapse to the identical string 'openai' for an exact,
+    zero-ambiguity comparison (no fuzzy scoring involved)."""
+    return _normalize(name).replace(" ", "")
+
+
 @dataclass
 class MappingLogEntry:
     raw_name: str
@@ -37,25 +44,44 @@ class MappingLogEntry:
 
 
 class EntityResolver:
-    def __init__(self, seed_list: Optional[List[str]] = None, threshold: float = 85.0):
+    # WRatio can't reliably separate a legal-suffix variant of the SAME
+    # company ("OpenAI Inc" vs "OpenAI", scores 90.0) from a genuinely
+    # DIFFERENT company that happens to share a word ("Cohere Health" vs
+    # "Cohere", also scores 90.0) -- and at a lower threshold it silently
+    # renamed "Scale AI" to "Stability AI" (85.5) in production. So fuzzy
+    # matching is now a last resort at a much higher threshold, gated by a
+    # length-ratio guard, after an exact whitespace-insensitive check that
+    # covers the common "Open AI" / "OpenAI" / "OpenAI, Inc." cases with zero
+    # ambiguity.
+    def __init__(self, seed_list: Optional[List[str]] = None, threshold: float = 95.0):
         self.seed_list = seed_list or CANONICAL_SEED_LIST
         self._normalized_seed = {_normalize(s): s for s in self.seed_list}
+        self._tight_seed = {_tight(s): s for s in self.seed_list}
         self.threshold = threshold
         self.log: List[MappingLogEntry] = []
 
     def resolve(self, raw_name: str) -> str:
         normalized = _normalize(raw_name)
+        tight = _tight(raw_name)
 
         if normalized in self._normalized_seed:
             canonical = self._normalized_seed[normalized]
             self.log.append(MappingLogEntry(raw_name, canonical, 100.0, True))
             return canonical
 
-        match = process.extractOne(normalized, self._normalized_seed.keys(), scorer=fuzz.WRatio)
-        if match and match[1] >= self.threshold:
-            canonical = self._normalized_seed[match[0]]
-            self.log.append(MappingLogEntry(raw_name, canonical, match[1], True))
+        if tight in self._tight_seed:
+            canonical = self._tight_seed[tight]
+            self.log.append(MappingLogEntry(raw_name, canonical, 100.0, True))
             return canonical
+
+        match = process.extractOne(normalized, self._normalized_seed.keys(), scorer=fuzz.WRatio)
+        if match:
+            candidate, score, _ = match
+            length_ratio = min(len(normalized), len(candidate)) / max(len(normalized), len(candidate), 1)
+            if score >= self.threshold and length_ratio >= 0.6:
+                canonical = self._normalized_seed[candidate]
+                self.log.append(MappingLogEntry(raw_name, canonical, score, True))
+                return canonical
 
         # No confident match: keep the raw name as its own canonical entity so
         # it still surfaces downstream, but flag it unmatched for review.

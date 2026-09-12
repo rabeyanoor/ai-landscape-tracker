@@ -57,7 +57,7 @@ async def _call_gemini(prompt: str) -> str:
 
     client = genai.Client(api_key=config.GEMINI_API_KEY)
     response = await asyncio.to_thread(
-        client.models.generate_content, model="gemini-2.0-flash", contents=prompt
+        client.models.generate_content, model="gemini-3.6-flash", contents=prompt
     )
     return response.text
 
@@ -67,7 +67,7 @@ async def _call_groq(prompt: str) -> str:
 
     client = AsyncGroq(api_key=config.GROQ_API_KEY)
     response = await client.chat.completions.create(
-        model="llama-3.1-70b-versatile",
+        model="openai/gpt-oss-120b",
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
     )

@@ -8,3 +8,4 @@ data/*.csv
 venv/
 *.log
 .DS_Store
+.history/

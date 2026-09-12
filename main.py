@@ -7,14 +7,10 @@ Usage:
                                        (useful for local testing without a service account)
 
 Pipeline stages:
-    1. Crawl papers (arXiv + GitHub star enrichment), news, and jobs concurrently
-    2. Resolve job/company names to canonical form
+    1. Crawl startups, products, papers (+ GitHub star enrichment), news, and jobs concurrently
+    2. Resolve startup/company names to canonical form (startups, products, jobs all
+       reference company names, so they're resolved against the same registry)
     3. Write CSV backups to data/ (always) and export a 6-tab Google Sheet (unless skipped)
-
-NOTE: Startups and Products entities/schemas exist (src/models/schemas.py) but
-no crawler currently populates them -- only papers_scraper.py and
-signal_scraper.py (news + jobs) were built. Those two tabs stay empty until a
-startups/products crawler is added.
 """
 import argparse
 import asyncio
@@ -25,9 +21,10 @@ import pandas as pd
 from loguru import logger
 
 from src.crawlers.papers_scraper import scrape_papers
+from src.crawlers.products_scraper import scrape_products
 from src.crawlers.signal_scraper import scrape_jobs, scrape_news
+from src.crawlers.startups_scraper import scrape_startups
 from src.exporters.gsheet_exporter import export_to_sheets
-from src.models.schemas import ProductEntity, StartupEntity
 from src.resolvers.entity_resolver import EntityResolver
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -51,22 +48,33 @@ async def run_crawlers():
     # return_exceptions=True is load-bearing: without it, a single failing
     # crawler propagates out of gather() and aborts the whole run before any
     # CSV is written.
-    papers, news, jobs = await asyncio.gather(
+    startups, products, papers, news, jobs = await asyncio.gather(
+        scrape_startups(),
+        scrape_products(),
         scrape_papers(),
         scrape_news(),
         scrape_jobs(),
         return_exceptions=True,
     )
+    startups = _unwrap(startups, "startups_scraper")
+    products = _unwrap(products, "products_scraper")
     papers = _unwrap(papers, "papers_scraper")
     news = _unwrap(news, "signal_scraper (news)")
     jobs = _unwrap(jobs, "signal_scraper (jobs)")
-    logger.info(f"Crawled: {len(papers)} papers, {len(news)} news, {len(jobs)} jobs")
-    return papers, news, jobs
+    logger.info(
+        f"Crawled: {len(startups)} startups, {len(products)} products, "
+        f"{len(papers)} papers, {len(news)} news, {len(jobs)} jobs"
+    )
+    return startups, products, papers, news, jobs
 
 
-def run_entity_resolution(jobs) -> EntityResolver:
+def run_entity_resolution(startups, products, jobs) -> EntityResolver:
     logger.info("=== Stage 2: Entity Resolution ===")
     resolver = EntityResolver()
+    for startup in startups:
+        startup.content.entityName = resolver.resolve(startup.content.entityName)
+    for product in products:
+        product.content.startupName = resolver.resolve(product.content.startupName)
     for job in jobs:
         job.content.company = resolver.resolve(job.content.company)
     logger.info(f"Entity resolution produced {len(resolver.log)} mapping log entries")
@@ -76,10 +84,8 @@ def run_entity_resolution(jobs) -> EntityResolver:
 async def run_pipeline(skip_sheets: bool = False):
     logger.info("Starting AI landscape ingestion pipeline")
 
-    startups: List[StartupEntity] = []
-    products: List[ProductEntity] = []
-    papers, news, jobs = await run_crawlers()
-    resolver = run_entity_resolution(jobs)
+    startups, products, papers, news, jobs = await run_crawlers()
+    resolver = run_entity_resolution(startups, products, jobs)
 
     DATA_DIR.mkdir(exist_ok=True)
     _backup_csv(startups, "startups.csv")
