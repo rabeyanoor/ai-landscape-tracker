@@ -1,87 +1,200 @@
 # AI Landscape Tracker
 
-An end-to-end pipeline that crawls AI research papers, 24-hour-fresh AI news, and AI job postings, structures them with a multi-tier LLM fallback chain, resolves duplicate entities, and publishes everything to a 6-tab Google Sheet.
+An end-to-end pipeline for tracking the AI ecosystem: it crawls research papers, fresh AI news, and job postings; structures the content with a multi-tier LLM extraction chain; resolves duplicate entities; and exports everything to a Google Sheet.
+
+This project is built to help monitor the latest AI developments across research, startup activity, and hiring signals in a single structured dataset.
+
+## Features
+
+- Crawl AI research papers from arXiv
+- Track fresh AI news and job opportunities from multiple sources
+- Enrich GitHub project data with star counts
+- Normalize and deduplicate entities such as companies, products, and AI papers
+- Structure raw content with a fallback LLM chain
+- Export structured results to a 6-tab Google Sheet
+- Keep CSV backups after each run for reliability and debugging
 
 ## Project Structure
 
-```
+```text
 ai-landscape-tracker/
-├── main.py                          # End-to-end orchestrator
-├── requirements.txt
-├── .env.example                     # Copy to .env and fill in your own API keys
+├── main.py                          # End-to-end orchestration
+├── requirements.txt                 # Python dependencies
+├── .env.example                    # Template for local environment variables
+├── .gitignore                      # Ignored local files and secrets
 ├── src/
-│   ├── config.py                     # All env variables in one place
+│   ├── config.py                   # Centralized configuration and env loading
 │   ├── models/
-│   │   └── schemas.py                 # Pydantic schemas (Startup, Product, ResearchPaper, Job, News)
+│   │   └── schemas.py              # Pydantic models for papers, news, jobs, etc.
 │   ├── crawlers/
-│   │   ├── papers_scraper.py         # arXiv API + GitHub star enrichment
-│   │   ├── signal_scraper.py         # 5 news sites + 5 job boards (Playwright + stealth), 24h freshness filter
-│   │   └── github_stars.py           # GitHub REST API star lookups
+│   │   ├── papers_scraper.py       # arXiv scraping + GitHub star enrichment
+│   │   ├── signal_scraper.py       # News/job scraping with freshness filtering
+│   │   ├── github_stars.py          # GitHub star lookup utilities
+│   │   ├── products_scraper.py     # Product/entity scraping pipeline
+│   │   └── startups_scraper.py     # Startup/entity scraping pipeline
 │   ├── llm/
-│   │   └── orchestrator.py           # Gemini -> Groq -> DeepSeek fallback chain + chunking
+│   │   └── orchestrator.py         # Gemini -> Groq -> DeepSeek fallback chain
 │   ├── resolvers/
-│   │   └── entity_resolver.py        # Fuzzy matching + canonical name mapping
+│   │   └── entity_resolver.py      # Duplicate resolution + canonical matching
 │   ├── exporters/
-│   │   └── gsheet_exporter.py        # 6-tab Google Sheet export
+│   │   └── gsheet_exporter.py      # Google Sheets export logic
 │   └── utils/
-│       ├── http_client.py            # Retry/backoff/429/413-safe HTTP client
-│       └── freshness.py              # "2 hours ago" -> ISO date parser
-├── data/                              # Local CSV backups (git-ignored)
-└── docs/
-    └── architecture.md               # Scaling / rate-limit / dedup / storage design doc
+│       ├── http_client.py          # HTTP client with retry/backoff handling
+│       └── freshness.py            # Relative/absolute time parsing
+├── data/                           # Local CSV output (git-ignored)
+├── docs/
+│   └── architecture.md             # Design notes for scaling and reliability
+└── README.md                       # Project documentation
 ```
 
+## Tech Stack
+
+- Python 3.11+
+- Pydantic
+- Playwright
+- Google Sheets API
+- arXiv API
+- GitHub REST API
+- Gemini / Groq / DeepSeek LLMs
+
 ## Setup
+
+### 1) Clone the repository
 
 ```bash
 git clone <your-repo-url>
 cd ai-landscape-tracker
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-playwright install chromium
-
-cp .env.example .env
-# Open .env and fill in your own API keys:
-#   GEMINI_API_KEY, GROQ_API_KEY, DEEPSEEK_API_KEY, GITHUB_TOKEN
 ```
 
-### For Google Sheets export (optional)
-1. Create a project in Google Cloud Console and enable the Sheets API and Drive API.
-2. Create a Service Account, download its JSON key, and save it as `service_account.json` in the project root.
-3. Set `GOOGLE_SERVICE_ACCOUNT_FILE` and `GOOGLE_SHEET_NAME` in `.env`.
-
-## Running
+### 2) Create a virtual environment
 
 ```bash
-# Full pipeline (crawl + LLM extraction fallback + entity resolution + Google Sheets export)
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 3) Install dependencies
+
+```bash
+pip install -r requirements.txt
+playwright install chromium
+```
+
+### 4) Configure environment variables
+
+Copy the example file and fill in the required keys:
+
+```bash
+cp .env.example .env
+```
+
+Then update `.env` with your own values, including:
+
+- `GEMINI_API_KEY`
+- `GROQ_API_KEY`
+- `DEEPSEEK_API_KEY`
+- `GITHUB_TOKEN`
+
+Optional Google Sheets configuration:
+
+- `GOOGLE_SERVICE_ACCOUNT_FILE`
+- `GOOGLE_SHEET_NAME`
+
+> ⚠️ Never commit real secrets. `.env` is git-ignored and must remain local only.
+
+## Running the Pipeline
+
+### Full pipeline
+
+```bash
 python main.py
+```
 
-# Crawl + entity resolution only, skip Sheets (useful without a service account)
+This runs the full flow:
+
+- crawler execution
+- freshness filtering
+- LLM extraction fallback
+- entity resolution
+- optional Google Sheet export
+
+### Skip Google Sheets export
+
+```bash
 python main.py --skip-sheets
+```
 
-# Test a single crawler in isolation
+This is useful when you want to run the data pipeline without a service account or spreadsheet setup.
+
+### Run specific crawlers directly
+
+```bash
 python -m src.crawlers.papers_scraper
 python -m src.crawlers.signal_scraper
 ```
 
-Every run writes CSV backups to `data/`, so a failed Sheets export never loses data.
+## Output and Data Storage
+
+Every run writes local CSV backups into the `data/` folder. This ensures that even if Google Sheets export fails, the extracted data is still preserved locally.
 
 ## Important Notes
 
-- **Freshness filter:** `signal_scraper.py` strictly enforces a 24-hour window (`FRESHNESS_WINDOW_HOURS` in `.env`) using `src/utils/freshness.py`'s relative/absolute date parser.
-- **Selector maintenance:** the per-site configs in `signal_scraper.py` (`NEWS_SITES`, `JOB_SITES`) are structural CSS selectors tied to each site's current DOM. If a site redesigns, update that site's `SiteConfig` entry — the scraping/retry logic itself is unchanged. As a safety net, if a site's selectors return zero fresh rows, the scraper automatically falls back once to `src/llm/orchestrator.py` to structure the raw page text instead of giving up entirely.
-- **Rate limiting:** the arXiv API is queried with a mandatory 3-second delay between requests per its usage policy; `MAX_CONCURRENT_REQUESTS` throttles everything else.
-- **413/429 handling** and the **LLM fallback chain** are both documented in detail in `docs/architecture.md`, along with the strategy for scaling to 500k+ records.
+### Freshness filter
 
-## Known Gap
+The news/job pipeline enforces a strict time window using `FRESHNESS_WINDOW_HOURS` from `.env` and the date parser in `src/utils/freshness.py`.
 
-`StartupEntity` and `ProductEntity` schemas exist in `src/models/schemas.py` and have tabs reserved in the Sheets exporter, but **no crawler currently populates them** — only `papers_scraper.py` and `signal_scraper.py` (news + jobs) have been built so far. `main.py` passes empty lists for Startups/Products until a dedicated crawler is added.
+### Selector maintenance
 
-### GitHub star enrichment
-Without a `GITHUB_TOKEN` in `.env`, GitHub API calls are made unauthenticated (60 req/hour) and will frequently 403 under load — set your own Personal Access Token to get reliable star counts.
+Per-site selectors in `signal_scraper.py` are tied to each source website's DOM structure. If a site redesigns, update the relevant `SiteConfig` entry. The core scraping and retry logic remains reusable.
 
-> ⚠️ **Security:** never commit real values into `.env.example` or `.env` — `.env` is already git-ignored. If any real key was ever committed to this repo's history, revoke and rotate it.
+If selector-based extraction returns zero relevant fresh rows, the scraper falls back to the LLM-based text structuring path instead of failing completely.
 
-## License / Usage
+### Rate limiting
 
-This code is built for educational/assignment purposes. Respect each site's `robots.txt` and Terms of Service before scraping it.
+- The arXiv API requires a mandatory delay between requests
+- `MAX_CONCURRENT_REQUESTS` is used to throttle other requests and reduce API strain
+- GitHub unauthenticated requests are limited and may hit 403s under heavy load
+
+### LLM fallback behavior
+
+The system tries a structured fallback order:
+
+1. Gemini
+2. Groq
+3. DeepSeek
+
+This ensures the pipeline keeps running even if one provider fails or returns poor extraction quality.
+
+## Google Sheets Export
+
+To enable Google Sheets export:
+
+1. Create a Google Cloud project
+2. Enable the Sheets API and Drive API
+3. Create a service account
+4. Download the JSON key file
+5. Save it as `service_account.json` in the project root
+6. Set the relevant environment variables in `.env`
+
+Example:
+
+```bash
+GOOGLE_SERVICE_ACCOUNT_FILE=service_account.json
+GOOGLE_SHEET_NAME=ai_landscape_tracker
+```
+
+## Known Gaps
+
+Some schemas and sheet tabs exist for startup and product entities, but dedicated crawlers for those categories are still being expanded. The current pipeline focuses strongly on papers and fresh news/job data.
+
+## Security
+
+- Never commit `.env` values to Git
+- Never commit real API keys into `README.md`, `.env.example`, or any tracked file
+- If a secret was ever exposed in the repository history, rotate it immediately
+
+## License
+
+This project is licensed under the MIT License. See the [`LICENSE`](LICENSE) file for details.
+
+This project is intended for educational and research-oriented usage. Please respect the robots.txt and Terms of Service of all sites you scrape.
